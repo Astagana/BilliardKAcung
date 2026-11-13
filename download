@@ -1,0 +1,5 @@
+server.js
+data.json
+data.json.tmp
+node_modules
+.github

@@ -1,0 +1,104 @@
+name: Deploy ke Vercel
+
+# Push ke main  -> deploy production
+# Pull request  -> deploy preview
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: vercel-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  check:
+    name: Cek sintaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node --check server.js
+      - run: node --check public/physics.js
+      - name: Cek app.js (modul ES)
+        run: |
+          cp public/app.js "$RUNNER_TEMP/app.mjs"
+          node --check "$RUNNER_TEMP/app.mjs"
+
+  deploy:
+    name: Deploy
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Pasang Vercel CLI
+        run: npm install --global vercel@latest
+
+      # Alamat backend (server.js yang di-host terpisah). Set di
+      # Settings > Secrets and variables > Actions > Variables > API_BASE_URL
+      - name: Tulis config.js
+        env:
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+        run: |
+          printf 'window.API_BASE = %s;\n' "$(node -e 'console.log(JSON.stringify(process.env.API_BASE_URL || ""))')" > public/config.js
+          cat public/config.js
+
+      - name: Ambil pengaturan project (production)
+        if: github.event_name != 'pull_request'
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Ambil pengaturan project (preview)
+        if: github.event_name == 'pull_request'
+        run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build (production)
+        if: github.event_name != 'pull_request'
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build (preview)
+        if: github.event_name == 'pull_request'
+        run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy production
+        if: github.event_name != 'pull_request'
+        id: prod
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Production: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy preview
+        if: github.event_name == 'pull_request'
+        id: preview
+        run: |
+          url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Preview: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Komentar URL preview di PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🚀 Preview Vercel: ${{ steps.preview.outputs.url }}`
+            });
